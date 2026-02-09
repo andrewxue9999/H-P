@@ -1,4 +1,6 @@
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, supabaseConfigError } from "@/lib/supabaseClient";
+
+export const dynamic = "force-dynamic";
 
 type TermType = {
   id: number;
@@ -7,6 +9,15 @@ type TermType = {
 };
 
 export default async function TermTypesPage() {
+  if (!supabase) {
+    return (
+      <main className="min-h-screen p-8">
+        <h1 className="text-2xl font-semibold">Term Types</h1>
+        <p className="mt-4 text-sm text-red-600">{supabaseConfigError}</p>
+      </main>
+    );
+  }
+
   const { data, error } = await supabase
     .from("term_types")
     .select("id, name, created_datetime_utc")

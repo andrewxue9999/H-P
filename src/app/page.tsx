@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, supabaseConfigError } from "@/lib/supabaseClient";
 
 type Status = "connecting" | "connected" | "error";
 
@@ -13,6 +13,12 @@ export default function Home() {
     let active = true;
 
     const check = async () => {
+      if (!supabase) {
+        setStatus("error");
+        setDetail(supabaseConfigError);
+        return;
+      }
+
       try {
         const { data, error } = await supabase.auth.getSession();
         if (!active) return;
