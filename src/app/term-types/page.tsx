@@ -1,4 +1,7 @@
-import { supabase, supabaseConfigError } from "@/lib/supabaseClient";
+import GoogleAuthButton from "@/components/google-auth-button";
+import SignOutButton from "@/components/sign-out-button";
+import { createClient } from "@/lib/supabase/server";
+import { supabaseConfigError } from "@/lib/supabase/env";
 
 export const dynamic = "force-dynamic";
 
@@ -9,11 +12,35 @@ type TermType = {
 };
 
 export default async function TermTypesPage() {
-  if (!supabase) {
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch {
     return (
       <main className="min-h-screen p-8">
         <h1 className="text-2xl font-semibold">Term Types</h1>
         <p className="mt-4 text-sm text-red-600">{supabaseConfigError}</p>
+      </main>
+    );
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-8">
+        <section className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-8 text-center shadow-sm">
+          <p className="text-xs uppercase tracking-wide text-gray-500">Protected Route</p>
+          <h1 className="mt-2 text-2xl font-semibold text-gray-900">Term Types</h1>
+          <p className="mt-3 text-sm text-gray-600">
+            You must sign in to view this page.
+          </p>
+          <div className="mt-6 flex items-center justify-center">
+            <GoogleAuthButton />
+          </div>
+        </section>
       </main>
     );
   }
@@ -37,8 +64,14 @@ export default async function TermTypesPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold">Term Types</h1>
-        <p className="text-xs text-gray-500">{rows.length} rows</p>
+        <div>
+          <h1 className="text-2xl font-semibold">Term Types</h1>
+          <p className="mt-1 text-xs text-gray-500">Signed in as {user.email}</p>
+        </div>
+        <div className="flex items-center gap-4">
+          <p className="text-xs text-gray-500">{rows.length} rows</p>
+          <SignOutButton />
+        </div>
       </div>
       <div className="mt-6 overflow-x-auto rounded-lg border border-gray-200">
         <table className="min-w-full text-left text-sm">

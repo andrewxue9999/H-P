@@ -14,6 +14,20 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-supabase-anon-key>
 
 For Vercel, set the same two variables in Project Settings -> Environment Variables for Production (and Preview if needed), then redeploy.
 
+## Google OAuth (Supabase Auth)
+
+This app uses Supabase Auth with Google OAuth. No Google client secret is required in this codebase.
+
+Use this Google OAuth Client ID in your provider setup:
+
+`388960353527-fh4grc6mla425lg0e3g1hh67omtrdihd.apps.googleusercontent.com`
+
+Set your redirect URI to:
+
+`http://localhost:3000/auth/callback` (local dev)
+
+This app initiates sign-in with a redirect target of exactly `/auth/callback`.
+
 ## Getting Started
 
 First, run the development server:
