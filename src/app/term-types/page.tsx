@@ -2,14 +2,35 @@ import GoogleAuthButton from "@/components/google-auth-button";
 import SignOutButton from "@/components/sign-out-button";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseConfigError } from "@/lib/supabase/env";
+import { revalidatePath } from "next/cache";
 
 export const dynamic = "force-dynamic";
 
-type TermType = {
-  id: number;
-  name: string;
-  created_datetime_utc: string;
+type CaptionRow = {
+  id?: number | string | null;
+  caption_id?: number | string | null;
+  caption?: string | null;
+  text?: string | null;
+  [key: string]: unknown;
 };
+
+type VoteRow = {
+  caption_id: number | string;
+  vote_value: number;
+};
+
+function getCaptionId(row: CaptionRow): number | string | null {
+  const id = row.id ?? row.caption_id;
+  if (typeof id === "number" && Number.isFinite(id)) return id;
+  if (typeof id === "string" && id.trim().length > 0) return id.trim();
+  return null;
+}
+
+function getCaptionText(row: CaptionRow) {
+  const value = row.caption ?? row.text;
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  return null;
+}
 
 export default async function TermTypesPage() {
   let supabase;
@@ -18,7 +39,7 @@ export default async function TermTypesPage() {
   } catch {
     return (
       <main className="min-h-screen p-8">
-        <h1 className="text-2xl font-semibold">Term Types</h1>
+        <h1 className="text-2xl font-semibold">Caption Ratings</h1>
         <p className="mt-4 text-sm text-red-600">{supabaseConfigError}</p>
       </main>
     );
@@ -28,14 +49,67 @@ export default async function TermTypesPage() {
     data: { user },
   } = await supabase.auth.getUser();
 
+  async function submitVote(formData: FormData) {
+    "use server";
+
+    const serverSupabase = await createClient();
+    const {
+      data: { user: authUser },
+    } = await serverSupabase.auth.getUser();
+
+    if (!authUser) {
+      throw new Error("You must be signed in to vote.");
+    }
+
+    const captionIdRaw = formData.get("captionId");
+    const voteRaw = formData.get("voteValue");
+
+    if (typeof captionIdRaw !== "string" || captionIdRaw.trim().length === 0) {
+      throw new Error("Invalid caption id.");
+    }
+
+    if (voteRaw !== "up" && voteRaw !== "down") {
+      throw new Error("Invalid vote value.");
+    }
+
+    const captionIdText = captionIdRaw.trim();
+    const numericCaptionId = Number(captionIdText);
+    const captionId =
+      Number.isInteger(numericCaptionId) && numericCaptionId > 0
+        ? numericCaptionId
+        : captionIdText;
+
+    const voteValue = voteRaw === "up" ? 1 : -1;
+    const nowUtc = new Date().toISOString();
+
+    const { error } = await serverSupabase.from("caption_votes").upsert(
+      {
+        caption_id: captionId,
+        profile_id: authUser.id,
+        vote_value: voteValue,
+        created_datetime_utc: nowUtc,
+        modified_datetime_utc: nowUtc,
+      },
+      {
+        onConflict: "profile_id,caption_id",
+      },
+    );
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    revalidatePath("/term-types");
+  }
+
   if (!user) {
     return (
       <main className="flex min-h-screen items-center justify-center p-8">
         <section className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-8 text-center shadow-sm">
           <p className="text-xs uppercase tracking-wide text-gray-500">Protected Route</p>
-          <h1 className="mt-2 text-2xl font-semibold text-gray-900">Term Types</h1>
+          <h1 className="mt-2 text-2xl font-semibold text-gray-900">Caption Ratings</h1>
           <p className="mt-3 text-sm text-gray-600">
-            You must sign in to view this page.
+            You must sign in to view captions and submit votes.
           </p>
           <div className="mt-6 flex items-center justify-center">
             <GoogleAuthButton />
@@ -45,55 +119,97 @@ export default async function TermTypesPage() {
     );
   }
 
-  const { data, error } = await supabase
-    .from("term_types")
-    .select("id, name, created_datetime_utc")
+  const { data: captionData, error: captionError } = await supabase
+    .from("captions")
+    .select("*")
     .order("id", { ascending: true });
 
-  if (error) {
+  if (captionError) {
     return (
       <main className="min-h-screen p-8">
-        <h1 className="text-2xl font-semibold">Term Types</h1>
-        <p className="mt-4 text-sm text-red-600">{error.message}</p>
+        <h1 className="text-2xl font-semibold">Caption Ratings</h1>
+        <p className="mt-4 text-sm text-red-600">{captionError.message}</p>
       </main>
     );
   }
 
-  const rows = (data ?? []) as TermType[];
+  const rows = (captionData ?? []) as CaptionRow[];
+  const captionIds = rows.map(getCaptionId).filter((id): id is number | string => id !== null);
+
+  const voteMap = new Map<string, number>();
+  if (captionIds.length > 0) {
+    const { data: voteData } = await supabase
+      .from("caption_votes")
+      .select("caption_id, vote_value")
+      .eq("profile_id", user.id)
+      .in("caption_id", captionIds);
+
+    for (const row of (voteData ?? []) as VoteRow[]) {
+      voteMap.set(String(row.caption_id), row.vote_value);
+    }
+  }
 
   return (
     <main className="min-h-screen p-8">
       <div className="flex items-baseline justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Term Types</h1>
+          <h1 className="text-2xl font-semibold">Caption Ratings</h1>
           <p className="mt-1 text-xs text-gray-500">Signed in as {user.email}</p>
         </div>
         <div className="flex items-center gap-4">
-          <p className="text-xs text-gray-500">{rows.length} rows</p>
+          <p className="text-xs text-gray-500">{rows.length} captions</p>
           <SignOutButton />
         </div>
       </div>
-      <div className="mt-6 overflow-x-auto rounded-lg border border-gray-200">
-        <table className="min-w-full text-left text-sm">
-          <thead className="bg-gray-50 text-gray-600">
-            <tr>
-              <th className="px-4 py-3 font-medium">ID</th>
-              <th className="px-4 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">Created (UTC)</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {rows.map((row) => (
-              <tr key={row.id} className="bg-white">
-                <td className="px-4 py-3 text-gray-900">{row.id}</td>
-                <td className="px-4 py-3 text-gray-900">{row.name}</td>
-                <td className="px-4 py-3 text-gray-600">
-                  {new Date(row.created_datetime_utc).toISOString()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      <div className="mt-6 space-y-3">
+        {rows.map((row, index) => {
+          const captionId = getCaptionId(row);
+          const captionText = getCaptionText(row);
+          const currentVote = captionId ? voteMap.get(String(captionId)) : undefined;
+
+          return (
+            <section
+              className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
+              key={captionId ? `caption-${captionId}` : `caption-row-${index}`}
+            >
+              <p className="text-sm text-gray-900">{captionText ?? `Caption #${index + 1}`}</p>
+              {typeof currentVote === "number" ? (
+                <p className="mt-2 text-xs text-gray-500">
+                  Your vote: {currentVote > 0 ? "Upvote" : "Downvote"}
+                </p>
+              ) : null}
+
+              {captionId ? (
+                <div className="mt-3 flex items-center gap-2">
+                  <form action={submitVote}>
+                    <input name="captionId" type="hidden" value={String(captionId)} />
+                    <input name="voteValue" type="hidden" value="up" />
+                    <button
+                      className="rounded-md border border-green-300 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50"
+                      type="submit"
+                    >
+                      Upvote
+                    </button>
+                  </form>
+
+                  <form action={submitVote}>
+                    <input name="captionId" type="hidden" value={String(captionId)} />
+                    <input name="voteValue" type="hidden" value="down" />
+                    <button
+                      className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                      type="submit"
+                    >
+                      Downvote
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-red-600">Missing caption ID, so voting is disabled.</p>
+              )}
+            </section>
+          );
+        })}
       </div>
     </main>
   );
