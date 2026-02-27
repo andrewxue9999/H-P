@@ -1,5 +1,6 @@
 import GoogleAuthButton from "@/components/google-auth-button";
 import SignOutButton from "@/components/sign-out-button";
+import UploadCaptionForm from "@/components/upload-caption-form";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseConfigError } from "@/lib/supabase/env";
 import { revalidatePath } from "next/cache";
@@ -9,8 +10,22 @@ export const dynamic = "force-dynamic";
 type CaptionRow = {
   id?: number | string | null;
   caption_id?: number | string | null;
+  image_id?: number | string | null;
+  imageId?: number | string | null;
   caption?: string | null;
+  content?: string | null;
   text?: string | null;
+  image_url?: string | null;
+  cdn_url?: string | null;
+  url?: string | null;
+  [key: string]: unknown;
+};
+
+type ImageRow = {
+  id?: number | string | null;
+  url?: string | null;
+  image_url?: string | null;
+  cdn_url?: string | null;
   [key: string]: unknown;
 };
 
@@ -27,7 +42,20 @@ function getCaptionId(row: CaptionRow): number | string | null {
 }
 
 function getCaptionText(row: CaptionRow) {
-  const value = row.caption ?? row.text;
+  const value = row.content ?? row.caption ?? row.text;
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  return null;
+}
+
+function getImageId(row: CaptionRow): number | string | null {
+  const value = row.image_id ?? row.imageId;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  return null;
+}
+
+function getImageUrl(row: CaptionRow | ImageRow) {
+  const value = row.url ?? row.image_url ?? row.cdn_url;
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   return null;
 }
@@ -135,6 +163,18 @@ export default async function TermTypesPage() {
 
   const rows = (captionData ?? []) as CaptionRow[];
   const captionIds = rows.map(getCaptionId).filter((id): id is number | string => id !== null);
+  const imageIds = rows.map(getImageId).filter((id): id is number | string => id !== null);
+
+  const imageMap = new Map<string, string>();
+  if (imageIds.length > 0) {
+    const { data: imageData } = await supabase.from("images").select("*").in("id", imageIds);
+    for (const row of (imageData ?? []) as ImageRow[]) {
+      if (row.id === null || row.id === undefined) continue;
+      const imageUrl = getImageUrl(row);
+      if (!imageUrl) continue;
+      imageMap.set(String(row.id), imageUrl);
+    }
+  }
 
   const voteMap = new Map<string, number>();
   if (captionIds.length > 0) {
@@ -163,9 +203,13 @@ export default async function TermTypesPage() {
       </div>
 
       <div className="mt-6 space-y-3">
+        <UploadCaptionForm />
+
         {rows.map((row, index) => {
           const captionId = getCaptionId(row);
           const captionText = getCaptionText(row);
+          const imageId = getImageId(row);
+          const imageUrl = imageId ? imageMap.get(String(imageId)) ?? getImageUrl(row) : getImageUrl(row);
           const currentVote = captionId ? voteMap.get(String(captionId)) : undefined;
 
           return (
@@ -173,6 +217,16 @@ export default async function TermTypesPage() {
               className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
               key={captionId ? `caption-${captionId}` : `caption-row-${index}`}
             >
+              {imageUrl ? (
+                <img
+                  alt={`Caption image ${index + 1}`}
+                  className="mb-3 max-h-72 w-full rounded-md object-contain"
+                  src={imageUrl}
+                />
+              ) : (
+                <p className="mb-3 text-xs text-amber-700">Image unavailable for this caption.</p>
+              )}
+
               <p className="text-sm text-gray-900">{captionText ?? `Caption #${index + 1}`}</p>
               {typeof currentVote === "number" ? (
                 <p className="mt-2 text-xs text-gray-500">
