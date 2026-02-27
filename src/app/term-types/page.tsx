@@ -34,6 +34,18 @@ type VoteRow = {
   vote_value: number;
 };
 
+function uniqueIds(ids: Array<number | string>) {
+  return Array.from(new Set(ids.map((id) => String(id))));
+}
+
+function chunkIds(ids: string[], size: number) {
+  const chunks: string[][] = [];
+  for (let index = 0; index < ids.length; index += size) {
+    chunks.push(ids.slice(index, index + size));
+  }
+  return chunks;
+}
+
 function getCaptionId(row: CaptionRow): number | string | null {
   const id = row.id ?? row.caption_id;
   if (typeof id === "number" && Number.isFinite(id)) return id;
@@ -187,13 +199,28 @@ export default async function TermTypesPage() {
   const imageIds = rows.map(getImageId).filter((id): id is number | string => id !== null);
 
   const imageMap = new Map<string, string>();
+  let imageLookupError: string | null = null;
   if (imageIds.length > 0) {
-    const { data: imageData } = await supabase.from("images").select("*").in("id", imageIds);
-    for (const row of (imageData ?? []) as ImageRow[]) {
-      if (row.id === null || row.id === undefined) continue;
-      const imageUrl = getImageUrl(row);
-      if (!imageUrl) continue;
-      imageMap.set(String(row.id), imageUrl);
+    const dedupedImageIds = uniqueIds(imageIds);
+    const imageIdChunks = chunkIds(dedupedImageIds, 150);
+
+    for (const imageIdChunk of imageIdChunks) {
+      const { data: imageData, error: imageError } = await supabase
+        .from("images")
+        .select("*")
+        .in("id", imageIdChunk);
+
+      if (imageError) {
+        imageLookupError = imageError.message;
+        break;
+      }
+
+      for (const row of (imageData ?? []) as ImageRow[]) {
+        if (row.id === null || row.id === undefined) continue;
+        const imageUrl = getImageUrl(row);
+        if (!imageUrl) continue;
+        imageMap.set(String(row.id), imageUrl);
+      }
     }
   }
 
@@ -225,6 +252,11 @@ export default async function TermTypesPage() {
 
       <div className="mt-6 space-y-3">
         <UploadCaptionForm />
+        {imageLookupError ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Could not load image rows from the database: {imageLookupError}
+          </p>
+        ) : null}
 
         {rows.map((row, index) => {
           const captionId = getCaptionId(row);
