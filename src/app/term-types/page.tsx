@@ -56,8 +56,29 @@ function getImageId(row: CaptionRow): number | string | null {
 
 function getImageUrl(row: CaptionRow | ImageRow) {
   const value = row.url ?? row.image_url ?? row.cdn_url;
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  return null;
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+
+  const trimmed = value.trim();
+
+  // Vercel pages are served over HTTPS, so HTTP image URLs can be blocked as mixed content.
+  if (trimmed.startsWith("http://")) {
+    return `https://${trimmed.slice("http://".length)}`;
+  }
+
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`;
+  }
+
+  if (trimmed.startsWith("/")) {
+    return trimmed;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.toString();
+  } catch {
+    return encodeURI(trimmed);
+  }
 }
 
 export default async function TermTypesPage() {
