@@ -1,9 +1,11 @@
 import GoogleAuthButton from "@/components/google-auth-button";
 import SignOutButton from "@/components/sign-out-button";
 import UploadCaptionForm from "@/components/upload-caption-form";
+import DelayedSubmitButton from "@/components/delayed-submit-button";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseConfigError } from "@/lib/supabase/env";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +34,18 @@ type ImageRow = {
 type VoteRow = {
   caption_id: number | string;
   vote_value: number;
+};
+
+type MemeRow = {
+  captionId: number | string;
+  captionText: string;
+  imageUrl: string;
+};
+
+type TermTypesPageProps = {
+  searchParams?: Promise<{
+    idx?: string | string[];
+  }>;
 };
 
 function uniqueIds(ids: Array<number | string>) {
@@ -93,7 +107,7 @@ function getImageUrl(row: CaptionRow | ImageRow) {
   }
 }
 
-export default async function TermTypesPage() {
+export default async function TermTypesPage({ searchParams }: TermTypesPageProps) {
   let supabase;
   try {
     supabase = await createClient();
@@ -124,6 +138,7 @@ export default async function TermTypesPage() {
 
     const captionIdRaw = formData.get("captionId");
     const voteRaw = formData.get("voteValue");
+    const nextIndexRaw = formData.get("nextIndex");
 
     if (typeof captionIdRaw !== "string" || captionIdRaw.trim().length === 0) {
       throw new Error("Invalid caption id.");
@@ -132,6 +147,10 @@ export default async function TermTypesPage() {
     if (voteRaw !== "up" && voteRaw !== "down") {
       throw new Error("Invalid vote value.");
     }
+    const nextIndexText =
+      typeof nextIndexRaw === "string" && /^\d+$/.test(nextIndexRaw.trim())
+        ? nextIndexRaw.trim()
+        : "0";
 
     const captionIdText = captionIdRaw.trim();
     const numericCaptionId = Number(captionIdText);
@@ -161,6 +180,7 @@ export default async function TermTypesPage() {
     }
 
     revalidatePath("/term-types");
+    redirect(`/term-types?idx=${nextIndexText}`);
   }
 
   if (!user) {
@@ -195,7 +215,6 @@ export default async function TermTypesPage() {
   }
 
   const rows = (captionData ?? []) as CaptionRow[];
-  const captionIds = rows.map(getCaptionId).filter((id): id is number | string => id !== null);
   const imageIds = rows.map(getImageId).filter((id): id is number | string => id !== null);
 
   const imageMap = new Map<string, string>();
@@ -224,18 +243,66 @@ export default async function TermTypesPage() {
     }
   }
 
-  const voteMap = new Map<string, number>();
-  if (captionIds.length > 0) {
-    const { data: voteData } = await supabase
-      .from("caption_votes")
-      .select("caption_id, vote_value")
-      .eq("profile_id", user.id)
-      .in("caption_id", captionIds);
+  const memes: MemeRow[] = [];
+  for (const row of rows) {
+    const captionId = getCaptionId(row);
+    if (captionId === null) continue;
 
-    for (const row of (voteData ?? []) as VoteRow[]) {
-      voteMap.set(String(row.caption_id), row.vote_value);
-    }
+    const captionText = getCaptionText(row) ?? "Caption unavailable.";
+    const imageId = getImageId(row);
+    const imageUrl = imageId ? imageMap.get(String(imageId)) ?? getImageUrl(row) : getImageUrl(row);
+    if (!imageUrl) continue;
+
+    memes.push({
+      captionId,
+      captionText,
+      imageUrl,
+    });
   }
+
+  if (memes.length === 0) {
+    return (
+      <main className="min-h-screen p-8">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">Caption Ratings</h1>
+            <p className="mt-1 text-xs text-gray-500">Signed in as {user.email}</p>
+          </div>
+          <SignOutButton />
+        </div>
+        <div className="mt-6 space-y-3">
+          <UploadCaptionForm />
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            No caption+image pairs are currently available.
+          </p>
+          {imageLookupError ? (
+            <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Could not load image rows from the database: {imageLookupError}
+            </p>
+          ) : null}
+        </div>
+      </main>
+    );
+  }
+
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const idxValue = resolvedSearchParams?.idx;
+  const idxParam = Array.isArray(idxValue) ? idxValue[0] : idxValue;
+  const parsedIndex = idxParam && /^\d+$/.test(idxParam) ? Number(idxParam) : 0;
+  const currentIndex = Number.isFinite(parsedIndex) ? parsedIndex % memes.length : 0;
+  const safeCurrentIndex = currentIndex < 0 ? 0 : currentIndex;
+  const nextIndex = (safeCurrentIndex + 1) % memes.length;
+  const currentMeme = memes[safeCurrentIndex];
+
+  const { data: voteData } = await supabase
+    .from("caption_votes")
+    .select("caption_id, vote_value")
+    .eq("profile_id", user.id)
+    .eq("caption_id", currentMeme.captionId)
+    .limit(1);
+
+  const existingVoteRow = (voteData ?? []) as VoteRow[];
+  const currentVote = existingVoteRow.length > 0 ? existingVoteRow[0].vote_value : undefined;
 
   return (
     <main className="min-h-screen p-8">
@@ -245,7 +312,9 @@ export default async function TermTypesPage() {
           <p className="mt-1 text-xs text-gray-500">Signed in as {user.email}</p>
         </div>
         <div className="flex items-center gap-4">
-          <p className="text-xs text-gray-500">{rows.length} captions</p>
+          <p className="text-xs text-gray-500">
+            Meme {safeCurrentIndex + 1} of {memes.length}
+          </p>
           <SignOutButton />
         </div>
       </div>
@@ -258,65 +327,44 @@ export default async function TermTypesPage() {
           </p>
         ) : null}
 
-        {rows.map((row, index) => {
-          const captionId = getCaptionId(row);
-          const captionText = getCaptionText(row);
-          const imageId = getImageId(row);
-          const imageUrl = imageId ? imageMap.get(String(imageId)) ?? getImageUrl(row) : getImageUrl(row);
-          const currentVote = captionId ? voteMap.get(String(captionId)) : undefined;
+        <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+          <img
+            alt={`Caption image ${safeCurrentIndex + 1}`}
+            className="mb-3 max-h-72 w-full rounded-md object-contain"
+            src={currentMeme.imageUrl}
+          />
 
-          return (
-            <section
-              className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
-              key={captionId ? `caption-${captionId}` : `caption-row-${index}`}
-            >
-              {imageUrl ? (
-                <img
-                  alt={`Caption image ${index + 1}`}
-                  className="mb-3 max-h-72 w-full rounded-md object-contain"
-                  src={imageUrl}
-                />
-              ) : (
-                <p className="mb-3 text-xs text-amber-700">Image unavailable for this caption.</p>
-              )}
+          <p className="text-sm text-gray-900">{currentMeme.captionText}</p>
+          {typeof currentVote === "number" ? (
+            <p className="mt-2 text-xs text-gray-500">
+              Your current vote: {currentVote > 0 ? "Upvote" : "Downvote"}
+            </p>
+          ) : null}
 
-              <p className="text-sm text-gray-900">{captionText ?? `Caption #${index + 1}`}</p>
-              {typeof currentVote === "number" ? (
-                <p className="mt-2 text-xs text-gray-500">
-                  Your vote: {currentVote > 0 ? "Upvote" : "Downvote"}
-                </p>
-              ) : null}
+          <div className="mt-3 flex items-center gap-2">
+            <form action={submitVote}>
+              <input name="captionId" type="hidden" value={String(currentMeme.captionId)} />
+              <input name="nextIndex" type="hidden" value={String(nextIndex)} />
+              <input name="voteValue" type="hidden" value="up" />
+              <DelayedSubmitButton
+                className="rounded-md border border-green-300 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-60"
+                idleLabel="Upvote"
+                pendingLabel="Upvoting..."
+              />
+            </form>
 
-              {captionId ? (
-                <div className="mt-3 flex items-center gap-2">
-                  <form action={submitVote}>
-                    <input name="captionId" type="hidden" value={String(captionId)} />
-                    <input name="voteValue" type="hidden" value="up" />
-                    <button
-                      className="rounded-md border border-green-300 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50"
-                      type="submit"
-                    >
-                      Upvote
-                    </button>
-                  </form>
-
-                  <form action={submitVote}>
-                    <input name="captionId" type="hidden" value={String(captionId)} />
-                    <input name="voteValue" type="hidden" value="down" />
-                    <button
-                      className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
-                      type="submit"
-                    >
-                      Downvote
-                    </button>
-                  </form>
-                </div>
-              ) : (
-                <p className="mt-3 text-xs text-red-600">Missing caption ID, so voting is disabled.</p>
-              )}
-            </section>
-          );
-        })}
+            <form action={submitVote}>
+              <input name="captionId" type="hidden" value={String(currentMeme.captionId)} />
+              <input name="nextIndex" type="hidden" value={String(nextIndex)} />
+              <input name="voteValue" type="hidden" value="down" />
+              <DelayedSubmitButton
+                className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                idleLabel="Downvote"
+                pendingLabel="Downvoting..."
+              />
+            </form>
+          </div>
+        </section>
       </div>
     </main>
   );
