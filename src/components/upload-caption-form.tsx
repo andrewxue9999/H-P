@@ -191,12 +191,22 @@ export default function UploadCaptionForm() {
       </p>
 
       <form className="mt-4 flex flex-wrap items-center gap-3" onSubmit={handleSubmit}>
+        <label
+          className="cursor-pointer rounded-md border border-gray-400 bg-gray-100 px-3 py-2 text-xs font-medium text-gray-800 hover:bg-gray-200"
+          htmlFor="meme-upload-file"
+        >
+          Choose File
+        </label>
         <input
           accept={accept}
-          className="max-w-full text-sm"
+          className="sr-only"
+          id="meme-upload-file"
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           type="file"
         />
+        <span className="max-w-full text-xs text-gray-600">
+          {file ? file.name : "No file chosen"}
+        </span>
         <button
           className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={isSubmitting}
