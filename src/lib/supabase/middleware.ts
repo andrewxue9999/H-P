@@ -1,9 +1,13 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { getSupabaseEnv } from "@/lib/supabase/env";
+import { getSupabaseEnv, isSupabaseConfigured } from "@/lib/supabase/env";
 
 export const updateSession = async (request: NextRequest) => {
   const response = NextResponse.next({ request });
+  if (!isSupabaseConfigured) {
+    return response;
+  }
+
   const { supabaseUrl, supabaseAnonKey } = getSupabaseEnv();
 
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {

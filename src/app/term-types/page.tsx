@@ -601,7 +601,7 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
               }`}
               href={tabHref("history")}
             >
-              View History
+              Rate History
             </a>
             <a
               className={`block rounded-xl px-3 py-2 text-sm font-medium ${
@@ -677,7 +677,7 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
                   renderMemeCard(mainMeme, "main", false)
                 ) : (
                   <section className="rounded-2xl border border-sky-100 bg-white p-6 text-sm text-slate-700 shadow-sm">
-                    You have rated every available meme. Use View History to change ratings or unrate.
+                    You have rated every available meme. Use Rate History to change ratings or unrate.
                   </section>
                 )}
               </div>
@@ -686,7 +686,7 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
 
           {activeTab === "history" ? (
             <div className="mt-5">
-              <h2 className="text-lg font-semibold text-slate-900">View History</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Rate History</h2>
               <p className="mt-1 text-sm text-slate-600">
                 Rated memes only. You can re-rate them or unrate to return them to the main feed.
               </p>
