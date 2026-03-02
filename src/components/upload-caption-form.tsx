@@ -23,6 +23,7 @@ type CaptionRecord = {
 };
 
 type GeneratedResult = {
+  uploadedAt: number;
   imageUrl: string;
   captions: CaptionRecord[];
 };
@@ -53,14 +54,13 @@ export default function UploadCaptionForm() {
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<GeneratedResult | null>(null);
+  const [results, setResults] = useState<GeneratedResult[]>([]);
 
   const accept = useMemo(() => Array.from(SUPPORTED_TYPES).join(","), []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    setResult(null);
 
     if (!file) {
       setError("Choose an image file first.");
@@ -170,10 +170,8 @@ export default function UploadCaptionForm() {
           ? (captionJson.captions as CaptionRecord[])
           : [];
 
-      setResult({
-        imageUrl: cdnUrl,
-        captions,
-      });
+      setResults((previous) => [{ uploadedAt: Date.now(), imageUrl: cdnUrl, captions }, ...previous]);
+      setFile(null);
 
       router.refresh();
     } catch (err) {
@@ -218,26 +216,33 @@ export default function UploadCaptionForm() {
 
       {error ? <p className="mt-3 text-xs text-red-600">{error}</p> : null}
 
-      {result ? (
-        <div className="mt-4 rounded-md border border-gray-200 p-3">
-          <img
-            alt="Uploaded meme"
-            className="max-h-72 w-full rounded-md object-contain"
-            src={result.imageUrl}
-          />
-          <div className="mt-3 space-y-2">
-            {result.captions.length > 0 ? (
-              result.captions.map((caption, index) => (
-                <p className="text-sm text-gray-800" key={`generated-${caption.id ?? index}`}>
-                  {getCaptionText(caption) ?? `Caption ${index + 1}`}
-                </p>
-              ))
-            ) : (
-              <p className="text-xs text-gray-500">
-                Captions were generated, but no caption text was returned in this response.
-              </p>
-            )}
-          </div>
+      {results.length > 0 ? (
+        <div className="mt-4 space-y-4">
+          {results.map((result) => (
+            <div className="rounded-md border border-gray-200 p-3" key={`result-${result.uploadedAt}`}>
+              <img
+                alt="Uploaded meme"
+                className="max-h-72 w-full rounded-md object-contain"
+                src={result.imageUrl}
+              />
+              <div className="mt-3 space-y-2">
+                {result.captions.length > 0 ? (
+                  result.captions.map((caption, index) => (
+                    <p
+                      className="text-sm text-gray-800"
+                      key={`generated-${result.uploadedAt}-${caption.id ?? index}`}
+                    >
+                      {getCaptionText(caption) ?? `Caption ${index + 1}`}
+                    </p>
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-500">
+                    Captions were generated, but no caption text was returned in this response.
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
     </section>

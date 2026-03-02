@@ -50,7 +50,7 @@ type ScoreInfo = {
   downvotes: number | null;
 };
 
-type ActiveTab = "main" | "history" | "popular" | "controversial";
+type ActiveTab = "main" | "history" | "popular" | "controversial" | "upload";
 
 type TermTypesPageProps = {
   searchParams?: Promise<{
@@ -245,6 +245,7 @@ function parseTab(value: string | string[] | undefined): ActiveTab {
   if (tabValue === "history") return "history";
   if (tabValue === "popular") return "popular";
   if (tabValue === "controversial") return "controversial";
+  if (tabValue === "upload") return "upload";
   return "main";
 }
 
@@ -300,6 +301,7 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
       returnTabRaw === "history" ||
       returnTabRaw === "popular" ||
       returnTabRaw === "controversial" ||
+      returnTabRaw === "upload" ||
       returnTabRaw === "main"
         ? returnTabRaw
         : "main";
@@ -350,6 +352,7 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
       returnTabRaw === "history" ||
       returnTabRaw === "popular" ||
       returnTabRaw === "controversial" ||
+      returnTabRaw === "upload" ||
       returnTabRaw === "main"
         ? returnTabRaw
         : "history";
@@ -582,6 +585,16 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
             </a>
             <a
               className={`block rounded-xl px-3 py-2 text-sm font-medium ${
+                activeTab === "upload"
+                  ? "bg-violet-100 text-violet-800"
+                  : "bg-slate-50 text-slate-700 hover:bg-violet-50"
+              }`}
+              href={tabHref("upload")}
+            >
+              Upload Meme
+            </a>
+            <a
+              className={`block rounded-xl px-3 py-2 text-sm font-medium ${
                 activeTab === "history"
                   ? "bg-violet-100 text-violet-800"
                   : "bg-slate-50 text-slate-700 hover:bg-violet-50"
@@ -624,8 +637,6 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
         </aside>
 
         <section className="flex-1 p-5 md:p-8">
-          <UploadCaptionForm />
-
           <div className="mt-4 space-y-2">
             {imageLookupError ? (
               <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -643,6 +654,18 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
               </p>
             ) : null}
           </div>
+
+          {activeTab === "upload" ? (
+            <div className="mt-5">
+              <h2 className="text-lg font-semibold text-slate-900">Upload Meme</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Upload an image to generate captions. New uploads appear above older uploads.
+              </p>
+              <div className="mt-4">
+                <UploadCaptionForm />
+              </div>
+            </div>
+          ) : null}
 
           {activeTab === "main" ? (
             <div className="mt-5">
