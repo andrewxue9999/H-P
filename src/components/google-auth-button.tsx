@@ -14,23 +14,14 @@ export default function GoogleAuthButton() {
     try {
       const supabase = createClient();
       const redirectTo = new URL("/auth/callback", window.location.origin).toString();
-      const { data, error: signInError } = await supabase.auth.signInWithOAuth({
+      const { error: signInError } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: {
-          redirectTo,
-          skipBrowserRedirect: true,
-        },
+        options: { redirectTo },
       });
 
       if (signInError) {
         throw signInError;
       }
-
-      if (!data?.url) {
-        throw new Error("Google sign-in did not return a redirect URL.");
-      }
-
-      window.location.assign(data.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start Google sign-in");
       setIsLoading(false);
