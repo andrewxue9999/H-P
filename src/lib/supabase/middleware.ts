@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { clearSupabaseAuthCookies, isRefreshTokenNotFoundError } from "@/lib/supabase/auth";
 import { getSupabaseEnv } from "@/lib/supabase/env";
 
 export const updateSession = async (request: NextRequest) => {
@@ -26,7 +27,16 @@ export const updateSession = async (request: NextRequest) => {
     },
   });
 
-  await supabase.auth.getUser();
+  try {
+    await supabase.auth.getUser();
+  } catch (error) {
+    if (isRefreshTokenNotFoundError(error)) {
+      clearSupabaseAuthCookies(request.cookies, response.cookies);
+      return response;
+    }
+
+    throw error;
+  }
 
   return response;
 };

@@ -1,11 +1,7 @@
 import GoogleAuthButton from "@/components/google-auth-button";
-import SignOutButton from "@/components/sign-out-button";
-import UploadCaptionForm from "@/components/upload-caption-form";
-import DelayedSubmitButton from "@/components/delayed-submit-button";
+import TermTypesClient, { type ActiveTab } from "@/components/term-types-client";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseConfigError } from "@/lib/supabase/env";
-import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +13,8 @@ type CaptionRow = {
   caption?: string | null;
   content?: string | null;
   text?: string | null;
+  created_by_user_id?: number | string | null;
+  created_datetime_utc?: string | null;
   image_url?: string | null;
   cdn_url?: string | null;
   url?: string | null;
@@ -28,12 +26,16 @@ type ImageRow = {
   url?: string | null;
   image_url?: string | null;
   cdn_url?: string | null;
+  created_by_user_id?: number | string | null;
+  created_datetime_utc?: string | null;
   [key: string]: unknown;
 };
 
 type VoteRow = {
   caption_id: number | string;
   vote_value: number;
+  created_datetime_utc?: string | null;
+  modified_datetime_utc?: string | null;
 };
 
 type ScoreRow = Record<string, unknown>;
@@ -42,6 +44,8 @@ type MemeRow = {
   captionId: number | string;
   captionText: string;
   imageUrl: string;
+  imageId: number | string | null;
+  createdAt: string | null;
 };
 
 type ScoreInfo = {
@@ -50,13 +54,13 @@ type ScoreInfo = {
   downvotes: number | null;
 };
 
-type ActiveTab = "main" | "history" | "popular" | "controversial" | "upload";
-
 type TermTypesPageProps = {
   searchParams?: Promise<{
     tab?: string | string[];
   }>;
 };
+
+type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
 
 function uniqueIds(ids: Array<number | string>) {
   return Array.from(new Set(ids.map((id) => String(id))));
@@ -95,8 +99,58 @@ function getCaptionId(row: CaptionRow): number | string | null {
 }
 
 function getCaptionText(row: CaptionRow) {
-  const value = row.content ?? row.caption ?? row.text;
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  const preferredKeys = [
+    "content",
+    "caption",
+    "text",
+    "caption_text",
+    "captionText",
+    "generated_caption",
+    "generatedCaption",
+    "description",
+    "prompt",
+    "title",
+    "name",
+  ];
+
+  for (const key of preferredKeys) {
+    const value = row[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  const ignoredKeys = new Set([
+    "id",
+    "caption_id",
+    "image_id",
+    "imageId",
+    "created_by_user_id",
+    "modified_by_user_id",
+    "created_datetime_utc",
+    "modified_datetime_utc",
+    "url",
+    "image_url",
+    "cdn_url",
+  ]);
+
+  let bestCandidate: string | null = null;
+
+  for (const [key, rawValue] of Object.entries(row)) {
+    if (ignoredKeys.has(key)) continue;
+    if (typeof rawValue !== "string") continue;
+
+    const value = rawValue.trim();
+    if (value.length < 4) continue;
+    if (/^https?:\/\//i.test(value)) continue;
+    if (/^[0-9a-f-]{24,}$/i.test(value)) continue;
+
+    if (!bestCandidate || value.length > bestCandidate.length) {
+      bestCandidate = value;
+    }
+  }
+
+  if (bestCandidate) return bestCandidate;
   return null;
 }
 
@@ -133,25 +187,27 @@ function getImageUrl(row: CaptionRow | ImageRow) {
   }
 }
 
-function normalizeCaptionId(value: unknown) {
-  if (typeof value !== "string") {
-    throw new Error("Invalid caption id.");
-  }
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    throw new Error("Invalid caption id.");
+async function resolveActorProfileId(supabase: SupabaseClient, authUserId: string) {
+  const lookupColumns = ["id", "user_id", "auth_user_id", "supabase_user_id"] as const;
+
+  for (const column of lookupColumns) {
+    const { data, error } = await supabase.from("profiles").select("id").eq(column, authUserId).maybeSingle();
+
+    if (error) {
+      // Keep trying common auth linkage columns until one works.
+      continue;
+    }
+
+    if (data?.id !== null && data?.id !== undefined) {
+      return String(data.id);
+    }
   }
 
-  const numericCaptionId = Number(trimmed);
-  if (Number.isInteger(numericCaptionId) && numericCaptionId > 0) {
-    return numericCaptionId;
-  }
-
-  return trimmed;
+  throw new Error("Could not resolve the signed-in user to a profiles.id value.");
 }
 
 async function loadScores(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: SupabaseClient,
   captionIds: string[],
 ): Promise<{ map: Map<string, ScoreInfo>; error: string | null }> {
   const scoreMap = new Map<string, ScoreInfo>();
@@ -249,20 +305,10 @@ function parseTab(value: string | string[] | undefined): ActiveTab {
   return "main";
 }
 
-function tabHref(tab: ActiveTab) {
-  return `/term-types?tab=${tab}`;
-}
-
-function formatRatio(scoreInfo: ScoreInfo | undefined) {
-  if (!scoreInfo) return "0 / 0";
-  const upvotes = scoreInfo.upvotes ?? 0;
-  const downvotes = scoreInfo.downvotes ?? 0;
-  return `${upvotes} / ${downvotes}`;
-}
-
-function formatScore(scoreInfo: ScoreInfo | undefined) {
-  if (!scoreInfo || scoreInfo.score === null) return "0";
-  return String(scoreInfo.score);
+function toStableTimestamp(value: string | null) {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export default async function TermTypesPage({ searchParams }: TermTypesPageProps) {
@@ -281,95 +327,6 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  async function upsertVote(formData: FormData) {
-    "use server";
-
-    const serverSupabase = await createClient();
-    const {
-      data: { user: authUser },
-    } = await serverSupabase.auth.getUser();
-
-    if (!authUser) {
-      throw new Error("You must be signed in to vote.");
-    }
-
-    const captionId = normalizeCaptionId(formData.get("captionId"));
-    const voteRaw = formData.get("voteValue");
-    const returnTabRaw = formData.get("returnTab");
-    const returnTab =
-      returnTabRaw === "history" ||
-      returnTabRaw === "popular" ||
-      returnTabRaw === "controversial" ||
-      returnTabRaw === "upload" ||
-      returnTabRaw === "main"
-        ? returnTabRaw
-        : "main";
-
-    if (voteRaw !== "up" && voteRaw !== "down") {
-      throw new Error("Invalid vote value.");
-    }
-
-    const voteValue = voteRaw === "up" ? 1 : -1;
-    const nowUtc = new Date().toISOString();
-
-    const { error } = await serverSupabase.from("caption_votes").upsert(
-      {
-        caption_id: captionId,
-        profile_id: authUser.id,
-        vote_value: voteValue,
-        created_datetime_utc: nowUtc,
-        modified_datetime_utc: nowUtc,
-      },
-      {
-        onConflict: "profile_id,caption_id",
-      },
-    );
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    revalidatePath("/term-types");
-    redirect(tabHref(returnTab));
-  }
-
-  async function clearVote(formData: FormData) {
-    "use server";
-
-    const serverSupabase = await createClient();
-    const {
-      data: { user: authUser },
-    } = await serverSupabase.auth.getUser();
-
-    if (!authUser) {
-      throw new Error("You must be signed in to update your vote.");
-    }
-
-    const captionId = normalizeCaptionId(formData.get("captionId"));
-    const returnTabRaw = formData.get("returnTab");
-    const returnTab =
-      returnTabRaw === "history" ||
-      returnTabRaw === "popular" ||
-      returnTabRaw === "controversial" ||
-      returnTabRaw === "upload" ||
-      returnTabRaw === "main"
-        ? returnTabRaw
-        : "history";
-
-    const { error } = await serverSupabase
-      .from("caption_votes")
-      .delete()
-      .eq("profile_id", authUser.id)
-      .eq("caption_id", captionId);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    revalidatePath("/term-types");
-    redirect(tabHref(returnTab));
-  }
 
   if (!user) {
     return (
@@ -445,305 +402,120 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
       captionId,
       captionText,
       imageUrl,
+      imageId,
+      createdAt:
+        typeof row.created_datetime_utc === "string" && row.created_datetime_utc.trim().length > 0
+          ? row.created_datetime_utc
+          : null,
     });
   }
 
   const captionIds = memes.map((meme) => String(meme.captionId));
 
-  const { data: voteData, error: voteError } = await supabase
-    .from("caption_votes")
-    .select("caption_id, vote_value")
-    .eq("profile_id", user.id);
+  let actorProfileId: string | null = null;
+  let actorProfileError: string | null = null;
+
+  try {
+    actorProfileId = await resolveActorProfileId(supabase, user.id);
+  } catch (error) {
+    actorProfileError = error instanceof Error ? error.message : "Could not resolve your profile.";
+  }
+
+  const { data: voteData, error: voteError } = actorProfileId
+    ? await supabase
+        .from("caption_votes")
+        .select("caption_id, vote_value, created_datetime_utc, modified_datetime_utc")
+        .eq("profile_id", actorProfileId)
+    : { data: null, error: null };
 
   const userVoteMap = new Map<string, number>();
+  const voteTimestampMap = new Map<string, string | null>();
   if (!voteError) {
     for (const vote of (voteData ?? []) as VoteRow[]) {
       const parsedVote = asNumber(vote.vote_value);
       if (parsedVote === null) continue;
-      userVoteMap.set(String(vote.caption_id), parsedVote);
+      const captionKey = String(vote.caption_id);
+      userVoteMap.set(captionKey, parsedVote);
+      voteTimestampMap.set(captionKey, vote.modified_datetime_utc ?? vote.created_datetime_utc ?? null);
     }
   }
 
   const { map: scoreMap, error: scoreError } = await loadScores(supabase, captionIds);
 
-  const unseenMemes = memes.filter((meme) => !userVoteMap.has(String(meme.captionId)));
-  const historyMemes = memes.filter((meme) => userVoteMap.has(String(meme.captionId)));
-  const popularMemes = [...memes].sort((left, right) => {
-    const leftInfo = scoreMap.get(String(left.captionId));
-    const rightInfo = scoreMap.get(String(right.captionId));
-    const leftUpvotes = leftInfo?.upvotes ?? 0;
-    const rightUpvotes = rightInfo?.upvotes ?? 0;
-    if (rightUpvotes !== leftUpvotes) return rightUpvotes - leftUpvotes;
-
-    const leftScore = leftInfo?.score ?? 0;
-    const rightScore = rightInfo?.score ?? 0;
-    return rightScore - leftScore;
-  });
-  const controversialMemes = [...memes].sort((left, right) => {
-    const leftInfo = scoreMap.get(String(left.captionId));
-    const rightInfo = scoreMap.get(String(right.captionId));
-    const leftDownvotes = leftInfo?.downvotes ?? 0;
-    const rightDownvotes = rightInfo?.downvotes ?? 0;
-    if (rightDownvotes !== leftDownvotes) return rightDownvotes - leftDownvotes;
-
-    const leftScore = leftInfo?.score ?? 0;
-    const rightScore = rightInfo?.score ?? 0;
-    return leftScore - rightScore;
-  });
-
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const activeTab = parseTab(resolvedSearchParams?.tab);
-  const mainMeme = unseenMemes[0];
+  const savedUploadResults = actorProfileId
+    ? (() => {
+        const uploads = new Map<
+          string,
+          {
+            uploadedAt: number;
+            imageUrl: string;
+            captions: CaptionRow[];
+          }
+        >();
 
-  const renderMemeCard = (meme: MemeRow, returnTab: ActiveTab, showCurrentVote: boolean) => {
-    const captionKey = String(meme.captionId);
-    const currentVote = userVoteMap.get(captionKey);
-    const scoreInfo = scoreMap.get(captionKey);
+        for (const meme of memes) {
+          if (!meme.imageId || !meme.createdAt) continue;
 
-    return (
-      <section className="rounded-2xl border border-sky-100 bg-white p-4 shadow-sm" key={captionKey}>
-        <img
-          alt="Meme image"
-          className="mb-4 max-h-80 w-full rounded-xl border border-slate-100 object-contain"
-          src={meme.imageUrl}
-        />
+          const captionRow = rows.find((row) => String(getCaptionId(row)) === String(meme.captionId));
+          if (!captionRow) continue;
 
-        <p className="text-base leading-relaxed text-slate-900">{meme.captionText}</p>
-        {showCurrentVote && typeof currentVote === "number" ? (
-          <p className="mt-2 text-xs text-slate-500">
-            Your vote: {currentVote > 0 ? "Upvote" : "Downvote"}
-          </p>
-        ) : null}
+          const captionOwnerId =
+            captionRow.created_by_user_id !== null && captionRow.created_by_user_id !== undefined
+              ? String(captionRow.created_by_user_id)
+              : null;
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <form action={upsertVote}>
-            <input name="captionId" type="hidden" value={captionKey} />
-            <input name="returnTab" type="hidden" value={returnTab} />
-            <input name="voteValue" type="hidden" value="up" />
-            <DelayedSubmitButton
-              className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
-              idleLabel="Upvote"
-              pendingLabel="Saving..."
-            />
-          </form>
+          if (captionOwnerId !== actorProfileId) {
+            continue;
+          }
 
-          <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700">
-            {formatScore(scoreInfo)}
-          </span>
+          const uploadKey = String(meme.imageId);
+          const uploadedAt = toStableTimestamp(meme.createdAt);
+          const existingUpload = uploads.get(uploadKey);
+          if (!existingUpload) {
+            uploads.set(uploadKey, {
+              uploadedAt,
+              imageUrl: meme.imageUrl,
+              captions: [captionRow],
+            });
+            continue;
+          }
 
-          <form action={upsertVote}>
-            <input name="captionId" type="hidden" value={captionKey} />
-            <input name="returnTab" type="hidden" value={returnTab} />
-            <input name="voteValue" type="hidden" value="down" />
-            <DelayedSubmitButton
-              className="rounded-lg border border-rose-300 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-              idleLabel="Downvote"
-              pendingLabel="Saving..."
-            />
-          </form>
+          existingUpload.captions.push(captionRow);
+          existingUpload.uploadedAt = Math.max(existingUpload.uploadedAt, uploadedAt);
+        }
 
-          <span className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700">
-            Up/Downvote Ratio {formatRatio(scoreInfo)}
-          </span>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {showCurrentVote ? (
-            <form action={clearVote}>
-              <input name="captionId" type="hidden" value={captionKey} />
-              <input name="returnTab" type="hidden" value={returnTab} />
-              <DelayedSubmitButton
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                idleLabel="Unrate"
-                pendingLabel="Updating..."
-              />
-            </form>
-          ) : null}
-        </div>
-      </section>
-    );
-  };
+        return Array.from(uploads.values()).sort((left, right) => right.uploadedAt - left.uploadedAt);
+      })()
+    : [];
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-sky-50 via-violet-50 to-white">
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col md:flex-row">
-        <aside className="border-b border-sky-100 bg-white px-5 py-6 md:min-h-screen md:w-72 md:border-b-0 md:border-r">
-          <p className="text-xs uppercase tracking-wide text-violet-700">Caption Ratings</p>
-          <h1 className="mt-2 text-xl font-semibold text-slate-900">Meme Voting</h1>
-          <p className="mt-1 text-xs text-slate-500">{user.email}</p>
-
-          <nav className="mt-6 space-y-2">
-            <a
-              className={`block rounded-xl px-3 py-2 text-sm font-medium ${
-                activeTab === "main"
-                  ? "bg-violet-100 text-violet-800"
-                  : "bg-slate-50 text-slate-700 hover:bg-violet-50"
-              }`}
-              href={tabHref("main")}
-            >
-              Main
-            </a>
-            <a
-              className={`block rounded-xl px-3 py-2 text-sm font-medium ${
-                activeTab === "upload"
-                  ? "bg-violet-100 text-violet-800"
-                  : "bg-slate-50 text-slate-700 hover:bg-violet-50"
-              }`}
-              href={tabHref("upload")}
-            >
-              Upload Meme
-            </a>
-            <a
-              className={`block rounded-xl px-3 py-2 text-sm font-medium ${
-                activeTab === "history"
-                  ? "bg-violet-100 text-violet-800"
-                  : "bg-slate-50 text-slate-700 hover:bg-violet-50"
-              }`}
-              href={tabHref("history")}
-            >
-              View History
-            </a>
-            <a
-              className={`block rounded-xl px-3 py-2 text-sm font-medium ${
-                activeTab === "popular"
-                  ? "bg-violet-100 text-violet-800"
-                  : "bg-slate-50 text-slate-700 hover:bg-violet-50"
-              }`}
-              href={tabHref("popular")}
-            >
-              Popular
-            </a>
-            <a
-              className={`block rounded-xl px-3 py-2 text-sm font-medium ${
-                activeTab === "controversial"
-                  ? "bg-violet-100 text-violet-800"
-                  : "bg-slate-50 text-slate-700 hover:bg-violet-50"
-              }`}
-              href={tabHref("controversial")}
-            >
-              Controversial
-            </a>
-          </nav>
-
-          <div className="mt-6 rounded-xl border border-violet-100 bg-violet-50 p-3 text-xs text-slate-700">
-            <p>Unrated in main: {unseenMemes.length}</p>
-            <p className="mt-1">Rated in history: {historyMemes.length}</p>
-            <p className="mt-1">Total memes: {memes.length}</p>
-          </div>
-
-          <div className="mt-6">
-            <SignOutButton />
-          </div>
-        </aside>
-
-        <section className="flex-1 p-5 md:p-8">
-          <div className="mt-4 space-y-2">
-            {imageLookupError ? (
-              <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                Could not load image rows: {imageLookupError}
-              </p>
-            ) : null}
-            {voteError ? (
-              <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                Could not load your vote history: {voteError.message}
-              </p>
-            ) : null}
-            {scoreError ? (
-              <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                Could not load score table; showing fallback where possible: {scoreError}
-              </p>
-            ) : null}
-          </div>
-
-          {activeTab === "upload" ? (
-            <div className="mt-5">
-              <h2 className="text-lg font-semibold text-slate-900">Upload Meme</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Upload an image to generate captions. New uploads appear above older uploads.
-              </p>
-              <div className="mt-4">
-                <UploadCaptionForm />
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "main" ? (
-            <div className="mt-5">
-              <h2 className="text-lg font-semibold text-slate-900">Main Feed (Unseen/Unrated)</h2>
-              <p className="mt-1 text-sm text-slate-600">Upvote/downvote moves to the next meme.</p>
-
-              <div className="mt-4">
-                {mainMeme ? (
-                  renderMemeCard(mainMeme, "main", false)
-                ) : (
-                  <section className="rounded-2xl border border-sky-100 bg-white p-6 text-sm text-slate-700 shadow-sm">
-                    You have rated every available meme. Use View History to change ratings or unrate.
-                  </section>
-                )}
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "history" ? (
-            <div className="mt-5">
-              <h2 className="text-lg font-semibold text-slate-900">View History</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Rated memes only. You can re-rate them or unrate to return them to the main feed.
-              </p>
-              <div className="mt-4 space-y-4">
-                {historyMemes.length > 0 ? (
-                  historyMemes.map((meme) => renderMemeCard(meme, "history", true))
-                ) : (
-                  <section className="rounded-2xl border border-sky-100 bg-white p-6 text-sm text-slate-700 shadow-sm">
-                    No rated memes yet.
-                  </section>
-                )}
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "popular" ? (
-            <div className="mt-5">
-              <h2 className="text-lg font-semibold text-slate-900">Popular</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Most liked memes first, regardless of whether you have already voted on them.
-              </p>
-              <div className="mt-4 space-y-4">
-                {popularMemes.length > 0 ? (
-                  popularMemes.map((meme) =>
-                    renderMemeCard(meme, "popular", userVoteMap.has(String(meme.captionId))),
-                  )
-                ) : (
-                  <section className="rounded-2xl border border-sky-100 bg-white p-6 text-sm text-slate-700 shadow-sm">
-                    No memes available.
-                  </section>
-                )}
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === "controversial" ? (
-            <div className="mt-5">
-              <h2 className="text-lg font-semibold text-slate-900">Controversial</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Most downvoted memes first, regardless of whether you have already seen them.
-              </p>
-              <div className="mt-4 space-y-4">
-                {controversialMemes.length > 0 ? (
-                  controversialMemes.map((meme) =>
-                    renderMemeCard(meme, "controversial", userVoteMap.has(String(meme.captionId))),
-                  )
-                ) : (
-                  <section className="rounded-2xl border border-sky-100 bg-white p-6 text-sm text-slate-700 shadow-sm">
-                    No memes available.
-                  </section>
-                )}
-              </div>
-            </div>
-          ) : null}
-
-        </section>
-      </div>
-    </main>
+    <TermTypesClient
+      activeTab={activeTab}
+      actorProfileError={actorProfileError}
+      actorProfileId={actorProfileId}
+      imageLookupError={imageLookupError}
+      initialScores={Array.from(scoreMap.entries()).map(([captionId, info]) => ({
+        captionId,
+        score: info.score,
+        upvotes: info.upvotes,
+        downvotes: info.downvotes,
+      }))}
+      initialVotes={Array.from(userVoteMap.entries()).map(([captionId, voteValue]) => ({
+        captionId,
+        ratedAt: voteTimestampMap.get(captionId) ?? null,
+        voteValue,
+      }))}
+      memes={memes.map((meme) => ({
+        captionId: String(meme.captionId),
+        captionText: meme.captionText,
+        imageUrl: meme.imageUrl,
+      }))}
+      savedUploadResults={savedUploadResults}
+      scoreError={scoreError}
+      userEmail={user.email ?? null}
+      voteError={voteError?.message ?? null}
+    />
   );
 }

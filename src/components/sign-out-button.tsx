@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { isRefreshTokenNotFoundError } from "@/lib/supabase/auth";
 
 export default function SignOutButton() {
   const router = useRouter();
@@ -15,9 +16,9 @@ export default function SignOutButton() {
 
     try {
       const supabase = createClient();
-      const { error: signOutError } = await supabase.auth.signOut();
+      const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
 
-      if (signOutError) {
+      if (signOutError && !isRefreshTokenNotFoundError(signOutError)) {
         throw signOutError;
       }
 

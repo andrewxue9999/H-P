@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import Image from "next/image";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { isRefreshTokenNotFoundError } from "@/lib/supabase/auth";
 
 const API_BASE_URL = "https://api.almostcrackd.ai";
 const SUPPORTED_TYPES = new Set([
@@ -28,6 +29,13 @@ type GeneratedResult = {
   captions: CaptionRecord[];
 };
 
+type UploadCaptionFormProps = {
+  actorProfileId: string | null;
+  savedResults: GeneratedResult[];
+};
+
+const LOCAL_RESULTS_STORAGE_KEY = "upload-caption-form-results";
+
 function getCaptionText(row: CaptionRecord) {
   const value = row.content ?? row.caption ?? row.text;
   if (typeof value === "string" && value.trim().length > 0) {
@@ -49,14 +57,191 @@ function parseErrorMessage(statusFallback: string, payload: unknown) {
   return statusFallback;
 }
 
-export default function UploadCaptionForm() {
-  const router = useRouter();
+async function readResponsePayload(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  const text = await response.text();
+  return text.length > 0 ? text : null;
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function sleep(delayMs: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+async function loadPersistedCaptions(supabase: ReturnType<typeof createClient>, imageId: string) {
+  const { data, error } = await supabase.from("captions").select("*").eq("image_id", imageId).order("id");
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []) as CaptionRecord[];
+}
+
+async function verifyPersistedUpload(
+  supabase: ReturnType<typeof createClient>,
+  imageId: string,
+  imageUrl: string,
+): Promise<GeneratedResult | null> {
+  const { data: imageRow, error: imageError } = await supabase.from("images").select("id").eq("id", imageId).maybeSingle();
+  if (imageError) {
+    throw imageError;
+  }
+  if (!imageRow) {
+    return null;
+  }
+
+  const captions = await loadPersistedCaptions(supabase, imageId);
+  if (captions.length === 0) {
+    return null;
+  }
+
+  return {
+    uploadedAt: Date.now(),
+    imageUrl,
+    captions,
+  };
+}
+
+async function insertFallbackCaptions(
+  supabase: ReturnType<typeof createClient>,
+  imageId: string,
+  actorProfileId: string,
+  captions: CaptionRecord[],
+) {
+  const normalizedRows = captions
+    .map((caption) => getCaptionText(caption))
+    .filter((captionText): captionText is string => Boolean(captionText))
+    .map((captionText) => ({
+      image_id: imageId,
+      content: captionText,
+      created_by_user_id: actorProfileId,
+      modified_by_user_id: actorProfileId,
+    }));
+
+  if (normalizedRows.length === 0) {
+    return false;
+  }
+
+  const { error } = await supabase.from("captions").insert(normalizedRows);
+  if (error) {
+    return false;
+  }
+
+  return true;
+}
+
+export default function UploadCaptionForm({ actorProfileId, savedResults }: UploadCaptionFormProps) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<GeneratedResult[]>([]);
+  const [localResults, setLocalResults] = useState<GeneratedResult[]>([]);
 
   const accept = useMemo(() => Array.from(SUPPORTED_TYPES).join(","), []);
+  const results = useMemo(() => {
+    const merged = [...localResults];
+
+    for (const result of savedResults) {
+      if (merged.some((localResult) => localResult.imageUrl === result.imageUrl)) {
+        continue;
+      }
+
+      merged.push(result);
+    }
+
+    return merged.sort((left, right) => right.uploadedAt - left.uploadedAt);
+  }, [localResults, savedResults]);
+
+  useEffect(() => {
+    try {
+      const storedValue = window.localStorage.getItem(LOCAL_RESULTS_STORAGE_KEY);
+      if (!storedValue) {
+        return;
+      }
+
+      const parsed = JSON.parse(storedValue);
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      const restoredResults = parsed.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return [];
+        }
+
+        const uploadedAt =
+          "uploadedAt" in entry && typeof entry.uploadedAt === "number" && Number.isFinite(entry.uploadedAt)
+            ? entry.uploadedAt
+            : null;
+        const imageUrl =
+          "imageUrl" in entry && typeof entry.imageUrl === "string" && entry.imageUrl.trim().length > 0
+            ? entry.imageUrl
+            : null;
+        const captions =
+          "captions" in entry && Array.isArray(entry.captions)
+            ? entry.captions.filter(
+                (caption: unknown): caption is CaptionRecord => Boolean(caption && typeof caption === "object"),
+              )
+            : [];
+
+        if (uploadedAt === null || imageUrl === null) {
+          return [];
+        }
+
+        return [
+          {
+            uploadedAt,
+            imageUrl,
+            captions,
+          },
+        ];
+      });
+
+      setLocalResults(restoredResults);
+    } catch {
+      // Ignore malformed client cache and fall back to server-backed results.
+    }
+  }, []);
+
+  useEffect(() => {
+    setLocalResults((previous) =>
+      previous.filter(
+        (localResult) => !savedResults.some((savedResult) => savedResult.imageUrl === localResult.imageUrl),
+      ),
+    );
+  }, [savedResults]);
+
+  useEffect(() => {
+    try {
+      if (localResults.length === 0) {
+        window.localStorage.removeItem(LOCAL_RESULTS_STORAGE_KEY);
+        return;
+      }
+
+      window.localStorage.setItem(LOCAL_RESULTS_STORAGE_KEY, JSON.stringify(localResults));
+    } catch {
+      // Ignore storage write failures; the UI can still rely on in-memory state.
+    }
+  }, [localResults]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -76,24 +261,38 @@ export default function UploadCaptionForm() {
 
     try {
       const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      let session = null;
+
+      try {
+        const sessionResult = await supabase.auth.getSession();
+        session = sessionResult.data.session;
+      } catch (sessionError) {
+        if (isRefreshTokenNotFoundError(sessionError)) {
+          await supabase.auth.signOut({ scope: "local" });
+          throw new Error("Your session expired. Sign in again and retry the upload.");
+        }
+
+        throw sessionError;
+      }
 
       const token = session?.access_token;
       if (!token) {
         throw new Error("You must be signed in to upload images.");
       }
 
-      const presignResponse = await fetch(`${API_BASE_URL}/pipeline/generate-presigned-url`, {
+      const presignResponse = await fetchWithTimeout(
+        `${API_BASE_URL}/pipeline/generate-presigned-url`,
+        {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ contentType: file.type }),
-      });
-      const presignJson = await presignResponse.json();
+        },
+        15000,
+      );
+      const presignJson = await readResponsePayload(presignResponse);
       if (!presignResponse.ok) {
         throw new Error(parseErrorMessage("Failed to generate upload URL.", presignJson));
       }
@@ -111,18 +310,24 @@ export default function UploadCaptionForm() {
         throw new Error("Upload URL response is missing required fields.");
       }
 
-      const uploadResponse = await fetch(presignedUrl, {
+      const uploadResponse = await fetchWithTimeout(
+        presignedUrl,
+        {
         method: "PUT",
         headers: {
           "Content-Type": file.type,
         },
         body: file,
-      });
+        },
+        120000,
+      );
       if (!uploadResponse.ok) {
         throw new Error(`Upload failed with status ${uploadResponse.status}.`);
       }
 
-      const registerResponse = await fetch(`${API_BASE_URL}/pipeline/upload-image-from-url`, {
+      const registerResponse = await fetchWithTimeout(
+        `${API_BASE_URL}/pipeline/upload-image-from-url`,
+        {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -132,8 +337,10 @@ export default function UploadCaptionForm() {
           imageUrl: cdnUrl,
           isCommonUse: false,
         }),
-      });
-      const registerJson = await registerResponse.json();
+        },
+        30000,
+      );
+      const registerJson = await readResponsePayload(registerResponse);
       if (!registerResponse.ok) {
         throw new Error(parseErrorMessage("Failed to register uploaded image.", registerJson));
       }
@@ -146,7 +353,9 @@ export default function UploadCaptionForm() {
         throw new Error("Image registration did not return a valid imageId.");
       }
 
-      const captionResponse = await fetch(`${API_BASE_URL}/pipeline/generate-captions`, {
+      const captionResponse = await fetchWithTimeout(
+        `${API_BASE_URL}/pipeline/generate-captions`,
+        {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -155,8 +364,10 @@ export default function UploadCaptionForm() {
         body: JSON.stringify({
           imageId,
         }),
-      });
-      const captionJson = await captionResponse.json();
+        },
+        120000,
+      );
+      const captionJson = await readResponsePayload(captionResponse);
       if (!captionResponse.ok) {
         throw new Error(parseErrorMessage("Failed to generate captions.", captionJson));
       }
@@ -170,12 +381,38 @@ export default function UploadCaptionForm() {
           ? (captionJson.captions as CaptionRecord[])
           : [];
 
-      setResults((previous) => [{ uploadedAt: Date.now(), imageUrl: cdnUrl, captions }, ...previous]);
-      setFile(null);
+      let verifiedResult: GeneratedResult | null = null;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        verifiedResult = await verifyPersistedUpload(supabase, imageId, cdnUrl);
+        if (verifiedResult) break;
+        await sleep(800);
+      }
 
-      router.refresh();
+      if (!verifiedResult && actorProfileId && captions.length > 0) {
+        const inserted = await insertFallbackCaptions(supabase, imageId, actorProfileId, captions);
+        if (inserted) {
+          verifiedResult = await verifyPersistedUpload(supabase, imageId, cdnUrl);
+        }
+      }
+
+      if (!verifiedResult) {
+        throw new Error("Upload completed, but the generated meme was not persisted to Supabase.");
+      }
+
+      setLocalResults((previous) => [
+        verifiedResult,
+        ...previous.filter((result) => result.imageUrl !== cdnUrl),
+      ]);
+      setFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to upload image.");
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError("Upload or caption generation timed out. Retry the request.");
+      } else {
+        setError(err instanceof Error ? err.message : "Unable to upload image.");
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -199,6 +436,7 @@ export default function UploadCaptionForm() {
           accept={accept}
           className="sr-only"
           id="meme-upload-file"
+          ref={fileInputRef}
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           type="file"
         />
@@ -220,10 +458,13 @@ export default function UploadCaptionForm() {
         <div className="mt-4 space-y-4">
           {results.map((result) => (
             <div className="rounded-md border border-gray-200 p-3" key={`result-${result.uploadedAt}`}>
-              <img
+              <Image
                 alt="Uploaded meme"
                 className="max-h-72 w-full rounded-md object-contain"
+                height={720}
                 src={result.imageUrl}
+                unoptimized
+                width={1280}
               />
               <div className="mt-3 space-y-2">
                 {result.captions.length > 0 ? (
