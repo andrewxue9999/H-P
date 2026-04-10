@@ -6,6 +6,8 @@ import SignOutButton from "@/components/sign-out-button";
 import UploadCaptionForm from "@/components/upload-caption-form";
 import { createClient } from "@/lib/supabase/client";
 
+const ONBOARDING_STORAGE_KEY = "caption-ratings-onboarding-dismissed";
+
 export type ActiveTab = "main" | "history" | "popular" | "controversial" | "upload";
 
 type CaptionRecord = {
@@ -166,6 +168,7 @@ export default function TermTypesClient({
   const [scoreMap, setScoreMap] = useState<Map<string, ScoreInfo>>(
     () => new Map(initialScores.map((score) => [score.captionId, score])),
   );
+  const [showOnboardingCue, setShowOnboardingCue] = useState(false);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -192,9 +195,26 @@ export default function TermTypesClient({
     setSkippedCaptionIds({});
   }, [memes]);
 
+  useEffect(() => {
+    try {
+      setShowOnboardingCue(window.localStorage.getItem(ONBOARDING_STORAGE_KEY) !== "true");
+    } catch {
+      setShowOnboardingCue(true);
+    }
+  }, []);
+
   function handleTabChange(tab: ActiveTab) {
     setActiveTab(tab);
     window.history.pushState({}, "", tabHref(tab));
+  }
+
+  function dismissOnboardingCue() {
+    setShowOnboardingCue(false);
+    try {
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
+    } catch {
+      // Ignore storage failures; hiding the cue in memory is sufficient.
+    }
   }
 
   async function mutateVote(captionId: string, desiredVote: number | undefined) {
@@ -399,7 +419,7 @@ export default function TermTypesClient({
               onClick={() => mutateVote(meme.captionId, undefined)}
               type="button"
             >
-              {isPending ? "Updating..." : "Unrate"}
+              {isPending ? "Updating..." : "Remove rating"}
             </button>
           ) : null}
           {allowSkip ? (
@@ -408,7 +428,7 @@ export default function TermTypesClient({
               onClick={() => skipMainMeme(meme.captionId)}
               type="button"
             >
-              Next
+              Skip for now
             </button>
           ) : null}
         </div>
@@ -419,32 +439,56 @@ export default function TermTypesClient({
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-violet-50 to-white">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col md:flex-row">
-        <aside className="border-b border-sky-100 bg-white px-5 py-6 md:min-h-screen md:w-72 md:border-b-0 md:border-r">
+        <aside className="border-b border-sky-200 bg-white/95 px-5 py-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)] backdrop-blur md:min-h-screen md:w-80 md:border-b-0 md:border-r">
           <p className="text-xs uppercase tracking-wide text-violet-700">Caption Ratings</p>
           <h1 className="mt-2 text-xl font-semibold text-slate-900">Meme Voting</h1>
           <p className="mt-1 text-xs text-slate-500">{userEmail}</p>
 
-          <nav className="mt-6 space-y-2">
+          <div className="mt-6 rounded-2xl border border-sky-100 bg-sky-50/70 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700">Navigation</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              Use these tabs to rate new captions, upload memes, or review previous votes.
+            </p>
+          </div>
+
+          <nav aria-label="Primary navigation" className="mt-4 space-y-2">
             {(["main", "upload", "history", "popular", "controversial"] as const).map((tab) => (
               <button
-                className={`block w-full rounded-xl px-3 py-2 text-left text-sm font-medium ${
+                aria-current={activeTab === tab ? "page" : undefined}
+                className={`relative block w-full rounded-2xl border px-4 py-3 text-left text-sm font-semibold transition ${
                   activeTab === tab
-                    ? "bg-violet-100 text-violet-800"
-                    : "bg-slate-50 text-slate-700 hover:bg-violet-50"
+                    ? "border-violet-300 bg-violet-100 text-violet-900 shadow-sm"
+                    : "border-slate-200 bg-slate-50 text-slate-700 hover:border-violet-200 hover:bg-violet-50"
                 }`}
                 key={tab}
                 onClick={() => handleTabChange(tab)}
                 type="button"
               >
-                {tab === "main"
-                  ? "Main"
-                  : tab === "upload"
-                    ? "Upload Meme"
-                    : tab === "history"
-                      ? "View History"
-                      : tab === "popular"
-                        ? "Popular"
-                        : "Controversial"}
+                {activeTab === tab ? (
+                  <span className="absolute left-0 top-1/2 h-8 w-1 -translate-y-1/2 rounded-r-full bg-violet-700" />
+                ) : null}
+                <span className="block">
+                  {tab === "main"
+                    ? "Rate New Captions"
+                    : tab === "upload"
+                      ? "Upload Meme"
+                      : tab === "history"
+                        ? "Your Rating History"
+                        : tab === "popular"
+                          ? "Top Rated"
+                          : "Most Controversial"}
+                </span>
+                <span className="mt-1 block text-xs font-medium text-slate-500">
+                  {tab === "main"
+                    ? "Start here to upvote or downvote unseen captions."
+                    : tab === "upload"
+                      ? "Add an image and generate caption options."
+                      : tab === "history"
+                        ? "See everything you have already rated."
+                        : tab === "popular"
+                          ? "Browse captions with the most upvotes."
+                          : "Browse captions with the most downvotes."}
+                </span>
               </button>
             ))}
           </nav>
@@ -505,6 +549,25 @@ export default function TermTypesClient({
             <div className="mt-5">
               <h2 className="text-lg font-semibold text-slate-900">Main Feed (Unseen/Unrated)</h2>
               <p className="mt-1 text-sm text-slate-600">Upvote or downvote sends the meme to View History immediately.</p>
+              {showOnboardingCue ? (
+                <section className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">Start here</p>
+                      <p className="mt-1 leading-6 text-slate-700">
+                        Rate the caption below, then use the highlighted tabs on the left to upload a meme or review your history.
+                      </p>
+                    </div>
+                    <button
+                      className="rounded-md px-2 py-1 text-xs font-semibold text-sky-700 hover:bg-white"
+                      onClick={dismissOnboardingCue}
+                      type="button"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </section>
+              ) : null}
               <div className="mt-4">
                 {mainMeme ? (
                   renderMemeCard(mainMeme, false, true)
@@ -521,7 +584,7 @@ export default function TermTypesClient({
             <div className="mt-5">
               <h2 className="text-lg font-semibold text-slate-900">View History</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Rated memes only. Re-rating or unrating updates this list immediately.
+                Rated memes only. Re-rating or removing a rating updates this list immediately.
               </p>
               <div className="mt-4 space-y-4">
                 {historyMemes.length > 0 ? (
@@ -539,7 +602,7 @@ export default function TermTypesClient({
             <div className="mt-5">
               <h2 className="text-lg font-semibold text-slate-900">Popular</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Most liked memes first, regardless of whether you have already voted on them.
+                Most liked captions first, regardless of whether you have already voted on them.
               </p>
               <div className="mt-4 space-y-4">
                 {popularMemes.length > 0 ? (
@@ -557,7 +620,7 @@ export default function TermTypesClient({
             <div className="mt-5">
               <h2 className="text-lg font-semibold text-slate-900">Controversial</h2>
               <p className="mt-1 text-sm text-slate-600">
-                Most downvoted memes first, regardless of whether you have already seen them.
+                Most downvoted captions first, regardless of whether you have already seen them.
               </p>
               <div className="mt-4 space-y-4">
                 {controversialMemes.length > 0 ? (

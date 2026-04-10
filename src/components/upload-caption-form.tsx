@@ -153,6 +153,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionStage, setSubmissionStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [localResults, setLocalResults] = useState<GeneratedResult[]>([]);
 
@@ -258,6 +259,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
     }
 
     setIsSubmitting(true);
+    setSubmissionStage("Checking your session...");
 
     try {
       const supabase = createClient();
@@ -280,6 +282,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
         throw new Error("You must be signed in to upload images.");
       }
 
+      setSubmissionStage("Preparing secure upload...");
       const presignResponse = await fetchWithTimeout(
         `${API_BASE_URL}/pipeline/generate-presigned-url`,
         {
@@ -310,6 +313,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
         throw new Error("Upload URL response is missing required fields.");
       }
 
+      setSubmissionStage("Uploading image...");
       const uploadResponse = await fetchWithTimeout(
         presignedUrl,
         {
@@ -325,6 +329,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
         throw new Error(`Upload failed with status ${uploadResponse.status}.`);
       }
 
+      setSubmissionStage("Saving image record...");
       const registerResponse = await fetchWithTimeout(
         `${API_BASE_URL}/pipeline/upload-image-from-url`,
         {
@@ -353,6 +358,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
         throw new Error("Image registration did not return a valid imageId.");
       }
 
+      setSubmissionStage("Generating captions...");
       const captionResponse = await fetchWithTimeout(
         `${API_BASE_URL}/pipeline/generate-captions`,
         {
@@ -381,11 +387,12 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
           ? (captionJson.captions as CaptionRecord[])
           : [];
 
+      setSubmissionStage("Finalizing results...");
       let verifiedResult: GeneratedResult | null = null;
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
         verifiedResult = await verifyPersistedUpload(supabase, imageId, cdnUrl);
         if (verifiedResult) break;
-        await sleep(800);
+        await sleep(300);
       }
 
       if (!verifiedResult && actorProfileId && captions.length > 0) {
@@ -407,12 +414,14 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      setSubmissionStage(null);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setError("Upload or caption generation timed out. Retry the request.");
       } else {
         setError(err instanceof Error ? err.message : "Unable to upload image.");
       }
+      setSubmissionStage(null);
     } finally {
       setIsSubmitting(false);
     }
@@ -422,7 +431,7 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
     <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <h2 className="text-base font-semibold text-gray-900">Upload Image and Generate Captions</h2>
       <p className="mt-1 text-xs text-gray-600">
-        This runs: presign URL, upload bytes, register image URL, then generate captions.
+        Choose an image, then generate captions. Progress appears below while the request runs.
       </p>
 
       <form className="mt-4 flex flex-wrap items-center gap-3" onSubmit={handleSubmit}>
@@ -451,6 +460,13 @@ export default function UploadCaptionForm({ actorProfileId, savedResults }: Uplo
           {isSubmitting ? "Generating..." : "Upload + Generate"}
         </button>
       </form>
+
+      {submissionStage ? (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-sky-300 border-t-sky-700" />
+          <span>{submissionStage}</span>
+        </div>
+      ) : null}
 
       {error ? <p className="mt-3 text-xs text-red-600">{error}</p> : null}
 

@@ -217,68 +217,67 @@ async function loadScores(
 
   const scoreTables = ["caption_scores", "caption_score"];
   for (const tableName of scoreTables) {
-    let failed = false;
-    let failureMessage: string | null = null;
+    const chunkResults = await Promise.all(
+      chunkIds(captionIds, 150).map((chunk) => supabase.from(tableName).select("*").in("caption_id", chunk)),
+    );
+    const failedResult = chunkResults.find((result) => result.error);
 
-    for (const chunk of chunkIds(captionIds, 150)) {
-      const { data, error } = await supabase.from(tableName).select("*").in("caption_id", chunk);
-      if (error) {
-        failed = true;
-        failureMessage = error.message;
-        break;
+    if (!failedResult) {
+      for (const { data } of chunkResults) {
+        for (const row of (data ?? []) as ScoreRow[]) {
+          const captionId = row.caption_id;
+          if (captionId === null || captionId === undefined) continue;
+          const captionKey = String(captionId);
+
+          const score = pickNumber(row, ["score", "global_score", "total_score", "net_score", "value"]);
+          const upvotes = pickNumber(row, [
+            "upvotes",
+            "upvote_count",
+            "up_votes",
+            "positive_votes",
+            "positive_count",
+          ]);
+          const downvotes = pickNumber(row, [
+            "downvotes",
+            "downvote_count",
+            "down_votes",
+            "negative_votes",
+            "negative_count",
+          ]);
+
+          scoreMap.set(captionKey, {
+            score,
+            upvotes,
+            downvotes,
+          });
+        }
       }
 
-      for (const row of (data ?? []) as ScoreRow[]) {
-        const captionId = row.caption_id;
-        if (captionId === null || captionId === undefined) continue;
-        const captionKey = String(captionId);
-
-        const score = pickNumber(row, ["score", "global_score", "total_score", "net_score", "value"]);
-        const upvotes = pickNumber(row, [
-          "upvotes",
-          "upvote_count",
-          "up_votes",
-          "positive_votes",
-          "positive_count",
-        ]);
-        const downvotes = pickNumber(row, [
-          "downvotes",
-          "downvote_count",
-          "down_votes",
-          "negative_votes",
-          "negative_count",
-        ]);
-
-        scoreMap.set(captionKey, {
-          score,
-          upvotes,
-          downvotes,
-        });
-      }
-    }
-
-    if (!failed) {
       return { map: scoreMap, error: null };
     }
 
-    if (failed && tableName === scoreTables[scoreTables.length - 1] && failureMessage) {
+    if (tableName === scoreTables[scoreTables.length - 1] && failedResult.error?.message) {
       scoreMap.clear();
     }
   }
 
   // Fallback: aggregate directly from votes when score table names are unavailable.
-  for (const chunk of chunkIds(captionIds, 150)) {
-    const { data, error } = await supabase
-      .from("caption_votes")
-      .select("caption_id, vote_value")
-      .in("caption_id", chunk);
+  const voteChunkResults = await Promise.all(
+    chunkIds(captionIds, 150).map((chunk) =>
+      supabase.from("caption_votes").select("caption_id, vote_value").in("caption_id", chunk),
+    ),
+  );
+  const voteErrorResult = voteChunkResults.find((result) => result.error);
 
-    if (error) {
-      return { map: new Map<string, ScoreInfo>(), error: error.message };
-    }
+  if (voteErrorResult?.error) {
+    return { map: new Map<string, ScoreInfo>(), error: voteErrorResult.error.message };
+  }
 
+  for (const { data } of voteChunkResults) {
     for (const row of (data ?? []) as VoteRow[]) {
-      const captionKey = String(row.caption_id);
+        const captionId = row.caption_id;
+      if (captionId === null || captionId === undefined) continue;
+      const captionKey = String(captionId);
       const current = scoreMap.get(captionKey) ?? { score: 0, upvotes: 0, downvotes: 0 };
       const vote = asNumber(row.vote_value) ?? 0;
       const upvotes = current.upvotes ?? 0;
@@ -366,24 +365,21 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
   let imageLookupError: string | null = null;
   if (imageIds.length > 0) {
     const dedupedImageIds = uniqueIds(imageIds);
-    const imageIdChunks = chunkIds(dedupedImageIds, 150);
+    const imageResults = await Promise.all(
+      chunkIds(dedupedImageIds, 150).map((imageIdChunk) => supabase.from("images").select("*").in("id", imageIdChunk)),
+    );
+    const imageErrorResult = imageResults.find((result) => result.error);
 
-    for (const imageIdChunk of imageIdChunks) {
-      const { data: imageData, error: imageError } = await supabase
-        .from("images")
-        .select("*")
-        .in("id", imageIdChunk);
-
-      if (imageError) {
-        imageLookupError = imageError.message;
-        break;
-      }
-
-      for (const row of (imageData ?? []) as ImageRow[]) {
-        if (row.id === null || row.id === undefined) continue;
-        const imageUrl = getImageUrl(row);
-        if (!imageUrl) continue;
-        imageMap.set(String(row.id), imageUrl);
+    if (imageErrorResult?.error) {
+      imageLookupError = imageErrorResult.error.message;
+    } else {
+      for (const { data: imageData } of imageResults) {
+        for (const row of (imageData ?? []) as ImageRow[]) {
+          if (row.id === null || row.id === undefined) continue;
+          const imageUrl = getImageUrl(row);
+          if (!imageUrl) continue;
+          imageMap.set(String(row.id), imageUrl);
+        }
       }
     }
   }
@@ -412,14 +408,23 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
 
   const captionIds = memes.map((meme) => String(meme.captionId));
 
-  let actorProfileId: string | null = null;
-  let actorProfileError: string | null = null;
+  const actorProfilePromise = resolveActorProfileId(supabase, user.id)
+    .then((profileId) => ({
+      actorProfileId: profileId,
+      actorProfileError: null as string | null,
+    }))
+    .catch((error: unknown) => ({
+      actorProfileId: null,
+      actorProfileError: error instanceof Error ? error.message : "Could not resolve your profile.",
+    }));
+  const scorePromise = loadScores(supabase, captionIds);
+  const resolvedSearchParamsPromise = searchParams ?? Promise.resolve(undefined);
 
-  try {
-    actorProfileId = await resolveActorProfileId(supabase, user.id);
-  } catch (error) {
-    actorProfileError = error instanceof Error ? error.message : "Could not resolve your profile.";
-  }
+  const [
+    { actorProfileId, actorProfileError },
+    { map: scoreMap, error: scoreError },
+    resolvedSearchParams,
+  ] = await Promise.all([actorProfilePromise, scorePromise, resolvedSearchParamsPromise]);
 
   const { data: voteData, error: voteError } = actorProfileId
     ? await supabase
@@ -440,9 +445,6 @@ export default async function TermTypesPage({ searchParams }: TermTypesPageProps
     }
   }
 
-  const { map: scoreMap, error: scoreError } = await loadScores(supabase, captionIds);
-
-  const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const activeTab = parseTab(resolvedSearchParams?.tab);
   const savedUploadResults = actorProfileId
     ? (() => {
